@@ -21,6 +21,11 @@ import {
   Phone,
   Key,
   IdCard as IdCardIcon,
+  Percent,
+  PiggyBank,
+  Wallet as WalletIcon,
+  ArrowDownCircle,
+  ArrowUpCircle,
 } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { toast } from "sonner";
@@ -29,11 +34,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { QRCodeSVG } from "qrcode.react";
 
-type DividendDTO = {
-  date: string;
-  value: number;
-  type: string;
-};
+type DividendDTO = { date: string; value: number; type: string; };
 
 type PortfolioItem = {
   investmentId: string;
@@ -65,9 +66,23 @@ type WalletDTO = {
   pixStaticKey?: string | null;
 };
 
+type TxItem = {
+  id: string;
+  amount: number;
+  status: string;
+  method?: string | null;
+  created_at: string;
+  description?: string | null;
+};
+
 export default function WalletPage() {
   const [wallet, setWallet] = useState<WalletDTO | null>(null);
   const [loading, setLoading] = useState(true);
+
+  // histories
+  const [depositHistory, setDepositHistory] = useState<TxItem[]>([]);
+  const [withdrawHistory, setWithdrawHistory] = useState<TxItem[]>([]);
+  const [loadingHistory, setLoadingHistory] = useState(true);
 
   // UI states
   const [isKYCVerified, setIsKYCVerified] = useState(false);
@@ -97,9 +112,15 @@ export default function WalletPage() {
   const [pixKey, setPixKey] = useState("");
   const [pixKeyType, setPixKeyType] = useState<string>("");
 
+  // Derived values
   const userBalance = useMemo(() => Number(wallet?.user.balance ?? 0), [wallet]);
   const totalInvested = useMemo(() => Number(wallet?.user.total_invested ?? 0), [wallet]);
+  const totalReturns = useMemo(() => Number(wallet?.user.total_returns ?? 0), [wallet]);
   const updatedAt = useMemo(() => wallet?.updatedAt ?? "", [wallet]);
+  const accumulatedYieldPct = useMemo(() => {
+    const base = totalInvested > 0 ? (totalReturns / totalInvested) * 100 : 0;
+    return Number.isFinite(base) ? Math.max(0, base) : 0;
+  }, [totalInvested, totalReturns]);
 
   // Load wallet
   useEffect(() => {
@@ -122,7 +143,31 @@ export default function WalletPage() {
     return () => {
       alive = false;
     };
-  }, []);
+  }, []); 
+
+  // Load histories (deposits + withdrawals)
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const res = await fetch("/api/wallet/history?limit=10", { cache: "no-store" });
+        if (!res.ok) throw new Error("Falha ao carregar histórico");
+        const data = await res.json();
+        if (!alive) return;
+        setDepositHistory(Array.isArray(data?.deposits) ? data.deposits : []);
+        setWithdrawHistory(Array.isArray(data?.withdrawals) ? data.withdrawals : []);
+      } catch (e: any) {
+        // Mantém a página funcionando mesmo sem o endpoint
+        setDepositHistory([]);
+        setWithdrawHistory([]);
+      } finally {
+        if (alive) setLoadingHistory(false);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []); 
 
   // Helpers
   const copyText = (text: string) => {
@@ -130,7 +175,7 @@ export default function WalletPage() {
     setCopied(true);
     toast.success("Copiado!");
     setTimeout(() => setCopied(false), 2000);
-  };
+  }; 
 
   const getPixKeyPlaceholder = () => {
     switch (pixKeyType) {
@@ -145,7 +190,7 @@ export default function WalletPage() {
       default:
         return "Selecione o tipo de chave";
     }
-  };
+  }; 
 
   const getPixKeyIcon = (type: string) => {
     switch (type) {
@@ -160,7 +205,15 @@ export default function WalletPage() {
       default:
         return null;
     }
-  };
+  }; 
+
+  const statusColor = (s: string) => {
+    const st = String(s || "").toLowerCase();
+    if (st === "paid" || st === "completed" || st === "approved") return "text-[#00D9A3]";
+    if (st === "pending" || st === "processing") return "text-yellow-400";
+    if (st === "failed" || st === "canceled" || st === "rejected") return "text-red-400";
+    return "text-gray-400";
+  }; 
 
   // Deposit: continue (create transaction + call PSP)
   const handleDepositContinue = async () => {
@@ -197,13 +250,12 @@ export default function WalletPage() {
         throw new Error(data?.error || "Falha ao iniciar depósito");
       }
 
-      // Card: pode retornar status imediatamente
+      // Card
       if (depositMethod === "card") {
         const status = String(data?.status || "").toLowerCase();
         if (status === "paid" || status === "approved" || status === "completed") {
           toast.success("Pagamento aprovado!");
           setDepositStep("done");
-          // refresh wallet
           try {
             const re = await fetch("/api/wallet", { cache: "no-store" });
             if (re.ok) setWallet(await re.json());
@@ -215,16 +267,24 @@ export default function WalletPage() {
           setCardExpMonth("");
           setCardExpYear("");
           setCardCVV("");
+          // refresh histories
+          try {
+            const rh = await fetch("/api/wallet/history?limit=10", { cache: "no-store" });
+            if (rh.ok) {
+              const h = await rh.json();
+              setDepositHistory(Array.isArray(h?.deposits) ? h.deposits : []);
+              setWithdrawHistory(Array.isArray(h?.withdrawals) ? h.withdrawals : []);
+            }
+          } catch {}
           return;
         }
-        // Caso contrário, apenas informe status pendente
         toast.success("Pagamento em processamento.");
         setShowDepositModal(false);
         setDepositAmount("");
         return;
       }
 
-      // PIX: guardar externalId e qrcode para confirmação
+      // PIX
       setExternalId(String(data.externalId || ""));
       setPixQrcode(String(data.pixQrcode || ""));
       if (!data.pixQrcode) {
@@ -235,7 +295,7 @@ export default function WalletPage() {
     } catch (e: any) {
       toast.error(e?.message || "Erro ao iniciar depósito");
     }
-  };
+  }; 
 
   // Deposit: confirm (check status)
   const handleDepositConfirm = async () => {
@@ -253,13 +313,20 @@ export default function WalletPage() {
       const status = String(data?.status || "").toLowerCase();
       if (status === "paid" || status === "already_paid") {
         toast.success("Pagamento recebido com sucesso!");
-        // refresh wallet
         try {
           const re = await fetch("/api/wallet", { cache: "no-store" });
           if (re.ok) setWallet(await re.json());
         } catch {}
+        // refresh histories
+        try {
+          const rh = await fetch("/api/wallet/history?limit=10", { cache: "no-store" });
+          if (rh.ok) {
+            const h = await rh.json();
+            setDepositHistory(Array.isArray(h?.deposits) ? h.deposits : []);
+            setWithdrawHistory(Array.isArray(h?.withdrawals) ? h.withdrawals : []);
+          }
+        } catch {}
         setDepositStep("done");
-        // fechar modal após pequeno delay
         setTimeout(() => {
           setShowDepositModal(false);
           setDepositAmount("");
@@ -273,7 +340,7 @@ export default function WalletPage() {
     } catch (e: any) {
       toast.error(e?.message || "Erro ao confirmar depósito");
     }
-  };
+  }; 
 
   // Withdraw
   const handleWithdraw = async () => {
@@ -308,15 +375,25 @@ export default function WalletPage() {
       setWithdrawAmount("");
       setPixKey("");
       setPixKeyType("");
-      // refresh wallet (saldo já debitado)
       try {
         const re = await fetch("/api/wallet", { cache: "no-store" });
         if (re.ok) setWallet(await re.json());
       } catch {}
+      // refresh histories
+      try {
+        const rh = await fetch("/api/wallet/history?limit=10", { cache: "no-store" });
+        if (rh.ok) {
+          const h = await rh.json();
+          setDepositHistory(Array.isArray(h?.deposits) ? h.deposits : []);
+          setWithdrawHistory(Array.isArray(h?.withdrawals) ? h.withdrawals : []);
+        }
+      } catch {}
     } catch (e: any) {
       toast.error(e?.message || "Erro ao solicitar saque");
     }
-  };
+  }; 
+
+  const formatBRL = (n: number) => n.toLocaleString("pt-BR", { minimumFractionDigits: 2 }); 
 
   return (
     <div className="min-h-screen bg-black pb-20 md:pb-0 md:pl-64 relative overflow-hidden">
@@ -345,27 +422,63 @@ export default function WalletPage() {
           </button>
         </motion.div>
 
-        {/* Balance Card */}
-        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }} className="bg-gradient-to-br from-[#1a1a1a] to-[#0a0a0a] rounded-3xl p-6 mb-6 border border-gray-800">
-          <p className="text-gray-400 text-sm mb-2">Total investido</p>
-          <h2 className="text-4xl font-bold text-white mb-4">
-            {hideBalance ? "R$ ••••••" : `R$ ${totalInvested.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}`}
-          </h2>
-
-          <div className="flex items-center gap-2 mb-6">
-            <TrendingUp className="w-4 h-4 text-[#00D9A3]" />
-            <span className="text-[#00D9A3] font-semibold">
-              {hideBalance ? "R$ ••••••" : `R$ ${(wallet?.user.total_returns ?? 0).toLocaleString("pt-BR", { minimumFractionDigits: 2 })}`}
-            </span>
-            <span className="text-gray-400 text-sm">Rendimento bruto</span>
+        {/* Metrics Grid */}
+        <motion.div initial={{ opacity: 0, y: 18 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.08 }} className="grid grid-cols-2 gap-3 mb-6">
+          <div className="bg-[#1a1a1a] rounded-2xl p-4 border border-gray-800">
+            <div className="flex items-center gap-2 mb-1">
+              <WalletIcon className="w-4 h-4 text-[#00D9A3]" />
+              <p className="text-xs text-gray-400">Saldo disponível</p>
+            </div>
+            <p className="text-xl font-bold text-white">
+              {hideBalance ? "R$ ••••••" : `R$ ${formatBRL(userBalance)}`}
+            </p>
           </div>
 
-          <p className="text-xs text-gray-400">
-            Última atualização {updatedAt ? new Date(updatedAt).toLocaleString("pt-BR") : "—"}
-          </p>
+          <div className="bg-[#1a1a1a] rounded-2xl p-4 border border-gray-800">
+            <div className="flex items-center gap-2 mb-1">
+              <TrendingUp className="w-4 h-4 text-[#00D9A3]" />
+              <p className="text-xs text-gray-400">Total investido</p>
+            </div>
+            <p className="text-xl font-bold text-white">
+              {hideBalance ? "R$ ••••••" : `R$ ${formatBRL(totalInvested)}`}
+            </p>
+          </div>
+
+          <div className="bg-[#1a1a1a] rounded-2xl p-4 border border-gray-800">
+            <div className="flex items-center gap-2 mb-1">
+              <PiggyBank className="w-4 h-4 text-[#00D9A3]" />
+              <p className="text-xs text-gray-400">Rendimentos pagos</p>
+            </div>
+            <p className="text-xl font-bold text-white">
+              {hideBalance ? "R$ ••••••" : `R$ ${formatBRL(totalReturns)}`}
+            </p>
+          </div>
+
+          <div className="bg-[#1a1a1a] rounded-2xl p-4 border border-gray-800">
+            <div className="flex items-center gap-2 mb-1">
+              <Percent className="w-4 h-4 text-[#00D9A3]" />
+              <p className="text-xs text-gray-400">Rentabilidade acumulada</p>
+            </div>
+            <p className="text-xl font-bold text-white">
+              {`${hideBalance ? "•••" : accumulatedYieldPct.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}%`}
+            </p>
+          </div>
         </motion.div>
 
-        {/* Action Buttons */}
+        {/* Resumo */}
+        <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.12 }} className="bg-gradient-to-br from-[#1a1a1a] to-[#0a0a0a] rounded-3xl p-6 mb-6 border border-gray-800">
+          <p className="text-gray-400 text-sm mb-2">Resumo</p>
+          <div className="flex items-center gap-2 mb-4">
+            <TrendingUp className="w-4 h-4 text-[#00D9A3]" />
+            <span className="text-[#00D9A3] font-semibold">
+              {hideBalance ? "R$ ••••••" : `R$ ${formatBRL(totalReturns)}`}
+            </span>
+            <span className="text-gray-400 text-sm">Rendimentos brutos acumulados</span>
+          </div>
+          <p className="text-xs text-gray-400">Última atualização {updatedAt ? new Date(updatedAt).toLocaleString("pt-BR") : "—"}</p>
+        </motion.div>
+
+        {/* Ações */}
         <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }} className="grid grid-cols-2 gap-3 mb-6">
           {/* Depositar */}
           <Dialog
@@ -398,32 +511,18 @@ export default function WalletPage() {
                   <motion.div key="deposit-form" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }} className="space-y-4">
                     <div>
                       <Label className="text-gray-400 text-sm mb-2 block">Valor do depósito</Label>
-                      <CurrencyInput
-                        value={depositAmount}
-                        onChange={setDepositAmount}
-                        className="bg-[#2a2a2a] border-gray-700 text-white text-lg h-12"
-                      />
+                      <CurrencyInput value={depositAmount} onChange={setDepositAmount} className="bg-[#2a2a2a] border-gray-700 text-white text-lg h-12" />
                       <p className="text-xs text-gray-400 mt-2">Depósito mínimo conforme configuração</p>
                     </div>
 
                     <div>
                       <Label className="text-gray-400 text-sm mb-3 block">Método de pagamento</Label>
                       <div className="grid grid-cols-2 gap-3">
-                        <button
-                          onClick={() => setDepositMethod("pix")}
-                          className={`p-4 rounded-2xl border-2 transition-all ${
-                            depositMethod === "pix" ? "border-[#00D9A3] bg-[#00D9A3]/10" : "border-gray-700 bg-[#2a2a2a] hover:border-gray-600"
-                          }`}
-                        >
+                        <button onClick={() => setDepositMethod("pix")} className={`p-4 rounded-2xl border-2 transition-all ${depositMethod === "pix" ? "border-[#00D9A3] bg-[#00D9A3]/10" : "border-gray-700 bg-[#2a2a2a] hover:border-gray-600"}`}>
                           <div className="text-2xl mb-2">⚡</div>
                           <p className="text-sm font-semibold text-white">PIX</p>
                         </button>
-                        <button
-                          onClick={() => setDepositMethod("card")}
-                          className={`p-4 rounded-2xl border-2 transition-all ${
-                            depositMethod === "card" ? "border-[#00D9A3] bg-[#00D9A3]/10" : "border-gray-700 bg-[#2a2a2a] hover:border-gray-600"
-                          }`}
-                        >
+                        <button onClick={() => setDepositMethod("card")} className={`p-4 rounded-2xl border-2 transition-all ${depositMethod === "card" ? "border-[#00D9A3] bg-[#00D9A3]/10" : "border-gray-700 bg-[#2a2a2a] hover:border-gray-600"}`}>
                           <CreditCard className="w-6 h-6 mx-auto mb-2 text-white" />
                           <p className="text-sm font-semibold text-white">Cartão</p>
                         </button>
@@ -434,58 +533,30 @@ export default function WalletPage() {
                       <div className="space-y-3">
                         <div>
                           <Label className="text-gray-400 text-sm mb-2 block">Número do cartão</Label>
-                          <Input
-                            placeholder="0000 0000 0000 0000"
-                            value={cardNumber}
-                            onChange={(e) => setCardNumber(e.target.value)}
-                            className="bg-[#2a2a2a] border-gray-700 text-white"
-                          />
+                          <Input placeholder="0000 0000 0000 0000" value={cardNumber} onChange={(e) => setCardNumber(e.target.value)} className="bg-[#2a2a2a] border-gray-700 text-white" />
                         </div>
                         <div>
                           <Label className="text-gray-400 text-sm mb-2 block">Nome do titular</Label>
-                          <Input
-                            placeholder="Nome impresso no cartão"
-                            value={cardHolder}
-                            onChange={(e) => setCardHolder(e.target.value)}
-                            className="bg-[#2a2a2a] border-gray-700 text-white"
-                          />
+                          <Input placeholder="Nome impresso no cartão" value={cardHolder} onChange={(e) => setCardHolder(e.target.value)} className="bg-[#2a2a2a] border-gray-700 text-white" />
                         </div>
                         <div className="grid grid-cols-3 gap-3">
                           <div>
                             <Label className="text-gray-400 text-sm mb-2 block">Mês</Label>
-                            <Input
-                              placeholder="MM"
-                              value={cardExpMonth}
-                              onChange={(e) => setCardExpMonth(e.target.value)}
-                              className="bg-[#2a2a2a] border-gray-700 text-white"
-                            />
+                            <Input placeholder="MM" value={cardExpMonth} onChange={(e) => setCardExpMonth(e.target.value)} className="bg-[#2a2a2a] border-gray-700 text-white" />
                           </div>
                           <div>
                             <Label className="text-gray-400 text-sm mb-2 block">Ano</Label>
-                            <Input
-                              placeholder="AAAA"
-                              value={cardExpYear}
-                              onChange={(e) => setCardExpYear(e.target.value)}
-                              className="bg-[#2a2a2a] border-gray-700 text-white"
-                            />
+                            <Input placeholder="AAAA" value={cardExpYear} onChange={(e) => setCardExpYear(e.target.value)} className="bg-[#2a2a2a] border-gray-700 text-white" />
                           </div>
                           <div>
                             <Label className="text-gray-400 text-sm mb-2 block">CVV</Label>
-                            <Input
-                              placeholder="000"
-                              value={cardCVV}
-                              onChange={(e) => setCardCVV(e.target.value)}
-                              className="bg-[#2a2a2a] border-gray-700 text-white"
-                            />
+                            <Input placeholder="000" value={cardCVV} onChange={(e) => setCardCVV(e.target.value)} className="bg-[#2a2a2a] border-gray-700 text-white" />
                           </div>
                         </div>
                       </div>
                     )}
 
-                    <Button
-                      onClick={handleDepositContinue}
-                      className="w-full bg-[#00D9A3] text-black hover:bg-[#00D9A3]/90 rounded-full py-6 font-semibold transition-all hover:scale-[1.02]"
-                    >
+                    <Button onClick={handleDepositContinue} className="w-full bg-[#00D9A3] text-black hover:bg-[#00D9A3]/90 rounded-full py-6 font-semibold transition-all hover:scale-[1.02]">
                       Continuar
                     </Button>
                   </motion.div>
@@ -495,10 +566,7 @@ export default function WalletPage() {
                       <p className="text-sm text-gray-400 mb-2">PIX Copia e Cola</p>
                       <div className="flex items-center gap-2">
                         <code className="flex-1 text-xs text-white break-all">{pixQrcode}</code>
-                        <button
-                          onClick={() => copyText(pixQrcode)}
-                          className="w-10 h-10 rounded-full bg-[#00D9A3] flex items-center justify-center flex-shrink-0 hover:scale-110 transition-transform"
-                        >
+                        <button onClick={() => copyText(pixQrcode)} className="w-10 h-10 rounded-full bg-[#00D9A3] flex items-center justify-center flex-shrink-0 hover:scale-110 transition-transform">
                           {copied ? <Check className="w-5 h-5 text-black" /> : <Copy className="w-5 h-5 text-black" />}
                         </button>
                       </div>
@@ -508,15 +576,10 @@ export default function WalletPage() {
                       <QRCodeSVG value={pixQrcode} size={192} />
                     </div>
 
-                    <Button
-                      onClick={handleDepositConfirm}
-                      className="w-full bg-[#00D9A3] text-black hover:bg-[#00D9A3]/90 rounded-full py-6 font-semibold transition-all hover:scale-[1.02]"
-                    >
+                    <Button onClick={handleDepositConfirm} className="w-full bg-[#00D9A3] text-black hover:bg-[#00D9A3]/90 rounded-full py-6 font-semibold transition-all hover:scale-[1.02]">
                       Confirmar depósito
                     </Button>
-                    <p className="text-xs text-gray-400 text-center">
-                      O saldo será liberado após confirmação do pagamento
-                    </p>
+                    <p className="text-xs text-gray-400 text-center">O saldo será liberado após confirmação do pagamento</p>
                   </motion.div>
                 ) : (
                   <motion.div key="done" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }} className="space-y-4">
@@ -552,12 +615,7 @@ export default function WalletPage() {
 
                 <div>
                   <Label className="text-gray-400 text-sm mb-2 block">Valor do saque</Label>
-                  <CurrencyInput
-                    value={withdrawAmount}
-                    onChange={setWithdrawAmount}
-                    className="bg-[#2a2a2a] border-gray-700 text-white text-lg h-12"
-                    disabled={!isKYCVerified}
-                  />
+                  <CurrencyInput value={withdrawAmount} onChange={setWithdrawAmount} className="bg-[#2a2a2a] border-gray-700 text-white text-lg h-12" disabled={!isKYCVerified} />
                   <p className="text-xs text-gray-400 mt-2">Saque mínimo conforme configuração</p>
                 </div>
 
@@ -600,13 +658,7 @@ export default function WalletPage() {
                       <Label className="text-gray-400 text-sm block">Chave PIX</Label>
                       <div className="relative">
                         <div className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400">{getPixKeyIcon(pixKeyType)}</div>
-                        <Input
-                          placeholder={getPixKeyPlaceholder()}
-                          value={pixKey}
-                          onChange={(e) => setPixKey(e.target.value)}
-                          className="bg-[#1a1a1a] border-gray-700 text-white pl-10"
-                          disabled={!isKYCVerified}
-                        />
+                        <Input placeholder={getPixKeyPlaceholder()} value={pixKey} onChange={(e) => setPixKey(e.target.value)} className="bg-[#1a1a1a] border-gray-700 text-white pl-10" disabled={!isKYCVerified} />
                       </div>
                     </motion.div>
                   )}
@@ -615,11 +667,7 @@ export default function WalletPage() {
                 <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-2xl p-4">
                   <p className="text-xs text-yellow-500">⚠️ Saques são processados em até 24 horas úteis via PIX</p>
                 </div>
-                <Button
-                  onClick={handleWithdraw}
-                  disabled={!isKYCVerified}
-                  className="w-full bg-[#00D9A3] text-black hover:bg-[#00D9A3]/90 rounded-full py-6 font-semibold transition-all hover:scale-[1.02] disabled:opacity-50 disabled:cursor-not-allowed"
-                >
+                <Button onClick={handleWithdraw} disabled={!isKYCVerified} className="w-full bg-[#00D9A3] text-black hover:bg-[#00D9A3]/90 rounded-full py-6 font-semibold transition-all hover:scale-[1.02] disabled:opacity-50 disabled:cursor-not-allowed">
                   Confirmar saque
                 </Button>
               </div>
@@ -672,9 +720,7 @@ export default function WalletPage() {
                     </div>
                     <div className="text-left">
                       <p className="text-white text-sm font-medium">{inv.planName}</p>
-                      <p className="text-gray-400 text-xs">
-                        R$ {inv.amount.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
-                      </p>
+                      <p className="text-gray-400 text-xs">R$ {inv.amount.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}</p>
                     </div>
                   </div>
                   <svg className="w-5 h-5 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -686,63 +732,55 @@ export default function WalletPage() {
           )}
         </motion.div>
 
-        {/* Modal Detalhes do Investimento */}
-        <Dialog open={showInvestmentDetail} onOpenChange={setShowInvestmentDetail}>
-          <DialogContent className="bg-[#1a1a1a] border-gray-800 text-white max-w-md max-h-[90vh] overflow-y-auto">
-            <DialogHeader>
-              <div className="flex items-center justify-between">
-                <DialogTitle className="text-white text-xl">{selectedInvestment?.planName}</DialogTitle>
-                <button onClick={() => setShowInvestmentDetail(false)} className="w-8 h-8 rounded-full bg-[#2a2a2a] flex items-center justify-center hover:bg-gray-700 transition-colors">
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
-            </DialogHeader>
-            {selectedInvestment && (
-              <div className="space-y-4">
-                <div className="bg-gradient-to-br from-[#2a2a2a] to-[#1a1a1a] rounded-2xl p-4 border border-gray-800">
-                  <p className="text-gray-400 text-sm mb-1">Valor investido</p>
-                  <p className="text-2xl font-bold text-white mb-3">
-                    R$ {selectedInvestment.amount.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
-                  </p>
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <p className="text-xs text-gray-400">Rendimento diário</p>
-                      <p className="text-sm font-semibold text-[#00D9A3]">{selectedInvestment.dailyReturnPct}%</p>
-                    </div>
-                    <div>
-                      <p className="text-xs text-gray-400">Rendimento mensal</p>
-                      <p className="text-sm font-semibold text-[#00D9A3]">{selectedInvestment.monthlyReturnPct}%</p>
-                    </div>
+        {/* Histórico de Depósitos */}
+        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.35 }} className="bg-[#1a1a1a] rounded-3xl p-6 border border-gray-800 mt-6">
+          <div className="flex items-center gap-2 mb-4">
+            <ArrowDownCircle className="w-5 h-5 text-[#00D9A3]" />
+            <h3 className="text-white font-semibold">Histórico de depósitos</h3>
+          </div>
+          {loadingHistory ? (
+            <p className="text-sm text-gray-500">Carregando...</p>
+          ) : depositHistory.length === 0 ? (
+            <p className="text-sm text-gray-500">Sem depósitos recentes.</p>
+          ) : (
+            <div className="space-y-2">
+              {depositHistory.map((t) => (
+                <div key={t.id} className="bg-[#2a2a2a] rounded-2xl p-4 flex items-center justify-between">
+                  <div>
+                    <p className="text-white text-sm font-medium">R$ {t.amount.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}</p>
+                    <p className="text-xs text-gray-400">{new Date(t.created_at).toLocaleString("pt-BR")}</p>
                   </div>
+                  <p className={`text-xs font-semibold ${statusColor(t.status)}`}>{t.status}</p>
                 </div>
+              ))}
+            </div>
+          )}
+        </motion.div>
 
-                <div>
-                  <h4 className="text-white font-semibold mb-3 flex items-center gap-2">
-                    <TrendingUp className="w-4 h-4 text-[#00D9A3]" />
-                    Histórico de dividendos
-                  </h4>
-                  {selectedInvestment.dividends?.length ? (
-                    <div className="space-y-2">
-                      {selectedInvestment.dividends.map((d, idx) => (
-                        <motion.div key={idx} initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: idx * 0.05 }} className="bg-[#2a2a2a] rounded-xl p-3 flex items-center justify-between hover:bg-[#333] transition-colors">
-                          <div>
-                            <p className="text-white text-sm font-medium">
-                              R$ {d.value.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
-                            </p>
-                            <p className="text-xs text-gray-400">{d.type}</p>
-                          </div>
-                          <p className="text-xs text-gray-400">{d.date}</p>
-                        </motion.div>
-                      ))}
-                    </div>
-                  ) : (
-                    <p className="text-sm text-gray-500">Sem dividendos registrados</p>
-                  )}
+        {/* Histórico de Saques */}
+        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.4 }} className="bg-[#1a1a1a] rounded-3xl p-6 border border-gray-800 mt-4">
+          <div className="flex items-center gap-2 mb-4">
+            <ArrowUpCircle className="w-5 h-5 text-red-400" />
+            <h3 className="text-white font-semibold">Histórico de saques</h3>
+          </div>
+          {loadingHistory ? (
+            <p className="text-sm text-gray-500">Carregando...</p>
+          ) : withdrawHistory.length === 0 ? (
+            <p className="text-sm text-gray-500">Sem saques recentes.</p>
+          ) : (
+            <div className="space-y-2">
+              {withdrawHistory.map((t) => (
+                <div key={t.id} className="bg-[#2a2a2a] rounded-2xl p-4 flex items-center justify-between">
+                  <div>
+                    <p className="text-white text-sm font-medium">R$ {t.amount.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}</p>
+                    <p className="text-xs text-gray-400">{new Date(t.created_at).toLocaleString("pt-BR")}</p>
+                  </div>
+                  <p className={`text-xs font-semibold ${statusColor(t.status)}`}>{t.status}</p>
                 </div>
-              </div>
-            )}
-          </DialogContent>
-        </Dialog>
+              ))}
+            </div>
+          )}
+        </motion.div>
       </div>
 
       <MobileNav />
