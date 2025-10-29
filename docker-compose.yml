@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  db:
+    image: mysql:8
+    container_name: grao-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: flamengo10
+      MYSQL_DATABASE: grao
+    ports:
+      - "3306:3306"
+    volumes:
+      - ./dump.sql:/docker-entrypoint-initdb.d/dump.sql
+    restart: unless-stopped
+
+  phpmyadmin:
+    image: phpmyadmin:latest
+    container_name: grao-phpmyadmin
+    environment:
+      PMA_HOST: db
+      PMA_PORT: 3306
+      MYSQL_ROOT_PASSWORD: flamengo10
+    ports:
+      - "8080:80"
+    depends_on:
+      - db
+    restart: unless-stopped
